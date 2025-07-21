@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Inference.js Image Prediction</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts - Inter -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <!-- Inference.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/inferencejs"></script>
+    <style>
+      body {
+        font-family: "Inter", sans-serif;
+        background-color: #f0f4f8; /* Light gray background */
+      }
+      /* Custom styles for the loading spinner */
+      .spinner {
+        border: 4px solid rgba(0, 0, 0, 0.1);
+        border-left-color: #3b82f6; /* Blue */
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* Modal styles */
+      .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.6);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.3s ease, visibility 0.3s ease;
+      }
+      .modal-overlay.show {
+        opacity: 1;
+        visibility: visible;
+      }
+      .modal-content {
+        background-color: #ffffff;
+        padding: 2rem;
+        border-radius: 0.75rem; /* rounded-xl */
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
+          0 10px 10px -5px rgba(0, 0, 0, 0.04); /* shadow-2xl */
+        width: 90%;
+        max-width: 500px;
+        transform: translateY(-20px);
+        transition: transform 0.3s ease;
+        position: relative;
+      }
+      .modal-overlay.show .modal-content {
+        transform: translateY(0);
+      }
+      .modal-close-button {
+        position: absolute;
+        top: 1rem;
+        right: 1rem;
+        background: none;
+        border: none;
+        font-size: 1.5rem;
+        cursor: pointer;
+        color: #4b5563; /* gray-600 */
+      }
+      .modal-close-button:hover {
+        color: #1f2937; /* gray-900 */
+      }
+    </style>
+  </head>
+  <body class="flex items-center justify-center min-h-screen p-4">
+    <div
+      class="bg-white p-8 rounded-xl shadow-2xl w-full max-w-3xl flex flex-col items-center space-y-6"
+    >
+      <h1 class="text-3xl font-bold text-gray-800 mb-4">
+        Image Prediction with Inference.js
+      </h1>
+
+      <!-- Image Upload and Display Area -->
+      <div
+        class="relative w-full max-w-lg bg-gray-100 rounded-lg overflow-hidden border-2 border-dashed border-gray-300 p-4 flex flex-col items-center justify-center min-h-[300px]"
+      >
+        <input
+          type="file"
+          id="imageInput"
+          accept="image/*"
+          class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+        />
+        <img
+          id="inferenceImage"
+          src="https://placehold.co/600x400/e2e8f0/64748b?text=Click+to+Upload+Image"
+          alt="Image for Inference"
+          class="w-full h-auto rounded-lg shadow-md object-contain max-h-[400px]"
+        />
+        <canvas
+          id="imageCanvas"
+          class="absolute top-0 left-0 w-full h-full"
+        ></canvas>
+        <p id="uploadPrompt" class="text-gray-500 mt-2 text-center">
+          Click or drag an image here to upload
+        </p>
+      </div>
+
+      <!-- Control Buttons and Loading Indicator -->
+      <div class="flex items-center space-x-4 mt-6">
+        <button
+          id="inferButton"
+          class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled
+        >
+          Run Inference
+        </button>
+        <div id="loadingIndicator" class="spinner hidden"></div>
+      </div>
+
+      <!-- Prediction Status Area (now just a placeholder, actual results in modal) -->
+      <div
+        id="predictionsOutput"
+        class="w-full max-w-lg mt-8 p-4 bg-gray-50 rounded-lg shadow-inner border border-gray-200"
+      >
+        <h2 class="text-xl font-semibold text-gray-700 mb-3">
+          Prediction Status:
+        </h2>
+        <p id="predictionStatusText" class="text-gray-600">
+          Upload an image and click "Run Inference" to see results in a pop-up.
+        </p>
+      </div>
+
+      <!-- Error/Status Message -->
+      <div
+        id="statusMessage"
+        class="mt-4 text-center text-red-500 font-medium hidden"
+      ></div>
+    </div>
+
+    <!-- Prediction Results Modal -->
+    <div id="predictionModal" class="modal-overlay hidden">
+      <div class="modal-content">
+        <button class="modal-close-button" id="closeModalButton">
+          &times;
+        </button>
+        <h2 class="text-2xl font-bold text-gray-800 mb-4">Inference Results</h2>
+        <ul id="modalPredictionList" class="list-disc pl-5 text-gray-700">
+          <!-- Predictions will be listed here -->
+        </ul>
+        <p id="modalNoPredictions" class="text-gray-500 mt-4 hidden">
+          No objects detected in the image.
+        </p>
+      </div>
+    </div>
+
+    <script>
+      // Global variables for Inference.js and DOM elements
+      let inferEngine;
+      let workerId;
+      const { InferenceEngine, CVImage } = inferencejs;
+
+      // DOM element references
+      const imageInput = document.getElementById("imageInput");
+      const inferenceImage = document.getElementById("inferenceImage");
+      const imageCanvas = document.getElementById("imageCanvas");
+      const ctx = imageCanvas.getContext("2d");
+      const inferButton = document.getElementById("inferButton");
+      const loadingIndicator = document.getElementById("loadingIndicator");
+      const statusMessage = document.getElementById("statusMessage");
+      const uploadPrompt = document.getElementById("uploadPrompt");
+      const predictionStatusText = document.getElementById(
+        "predictionStatusText"
+      );
+
+      // Modal DOM elements
+      const predictionModal = document.getElementById("predictionModal");
+      const closeModalButton = document.getElementById("closeModalButton");
+      const modalPredictionList = document.getElementById(
+        "modalPredictionList"
+      );
+      const modalNoPredictions = document.getElementById("modalNoPredictions");
+
+      // Model details from the user's prompt
+      const publishableKey = "rf_qVFGWhARECctKU6oDZ1tI4yB9Lo1";
+      const modelId = "techs-2";
+      const modelVersion = "2";
+
+      // --- IMPORTANT: Customize this label map based on your model's actual output ---
+      // If your model outputs '0' for mouse and '1' for keyboard, set it like:
+      // const labelMap = { "0": "mouse", "1": "keyboard" };
+      // If it outputs generic strings like 'class_a', 'class_b', set it like:
+      // const labelMap = { "class_a": "mouse", "class_b": "keyboard" };
+      // For demonstration, assuming the model might output 'mouse_id' or 'keyboard_id'
+      const labelMap = {
+        mouse_id: "mouse",
+        keyboard_id: "keyboard",
+        // Add other mappings if your model detects more objects
+        0: "mouse", // Example if model outputs numerical IDs
+        1: "keyboard", // Example if model outputs numerical IDs
+        // You might need to inspect console.log(predictions) to find the actual raw labels/IDs
+      };
+      // -----------------------------------------------------------------------------
+
+      /**
+       * Resolves the display label using the labelMap.
+       * @param {string} rawLabel - The raw label from the model's prediction (p.label or p.class_id).
+       * @returns {string} The human-readable label or "Unknown" if not found.
+       */
+      function getDisplayLabel(rawLabel) {
+        // Try to use the rawLabel directly if it's a string and not empty
+        if (
+          rawLabel &&
+          typeof rawLabel === "string" &&
+          rawLabel.trim() !== ""
+        ) {
+          // Check if the raw label itself is a key in our map
+          if (labelMap[rawLabel]) {
+            return labelMap[rawLabel];
+          }
+          // If the raw label is already descriptive (e.g., "mouse"), use it directly
+          // Otherwise, it might be a generic "LABEL_0" or similar, so we fall back to "Unknown"
+          if (
+            rawLabel.toLowerCase().includes("mouse") ||
+            rawLabel.toLowerCase().includes("keyboard")
+          ) {
+            return rawLabel; // Use the raw label if it already contains keywords
+          }
+        }
+        // If the rawLabel is null, undefined, or empty, try to map it if it's a known ID
+        // This part might need adjustment based on whether the model provides p.class_id
+        // For now, we'll assume p.label might contain a string that needs mapping.
+        return labelMap[rawLabel] || "Unknown";
+      }
+
+      /**
+       * Displays a status message to the user.
+       * @param {string} message - The message to display.
+       * @param {boolean} isError - True if the message is an error, false otherwise.
+       */
+      function showStatusMessage(message, isError = false) {
+        statusMessage.textContent = message;
+        statusMessage.classList.remove("hidden");
+        if (isError) {
+          statusMessage.classList.add("text-red-500");
+          statusMessage.classList.remove("text-green-500");
+        } else {
+          statusMessage.classList.add("text-green-500");
+          statusMessage.classList.remove("text-red-500");
+        }
+      }
+
+      /**
+       * Hides the status message.
+       */
+      function hideStatusMessage() {
+        statusMessage.classList.add("hidden");
+      }
+
+      /**
+       * Clears the canvas and prediction list in the modal.
+       */
+      function clearResults() {
+        ctx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
+        modalPredictionList.innerHTML = "";
+        modalNoPredictions.classList.add("hidden");
+        predictionStatusText.textContent =
+          'Upload an image and click "Run Inference" to see results in a pop-up.';
+      }
+
+      /**
+       * Handles image file selection and displays it.
+       * @param {Event} event - The change event from the file input.
+       */
+      imageInput.addEventListener("change", function (event) {
+        const file = event.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = function (e) {
+            inferenceImage.src = e.target.result;
+            // Clear previous drawings and predictions when a new image is loaded
+            clearResults();
+            hideStatusMessage();
+            uploadPrompt.classList.add("hidden"); // Hide prompt once image is loaded
+            hideModal(); // Hide modal if open
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+
+      // Event listener for image drag and drop
+      inferenceImage.addEventListener(
+        "dragover",
+        (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          inferenceImage.classList.add("border-blue-500"); // Highlight drop area
+        },
+        false
+      );
+
+      inferenceImage.addEventListener(
+        "dragleave",
+        (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          inferenceImage.classList.remove("border-blue-500");
+        },
+        false
+      );
+
+      inferenceImage.addEventListener(
+        "drop",
+        (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          inferenceImage.classList.remove("border-blue-500");
+          const files = e.dataTransfer.files;
+          if (files.length > 0) {
+            imageInput.files = files; // Assign dropped files to the input
+            imageInput.dispatchEvent(new Event("change")); // Trigger change event
+          }
+        },
+        false
+      );
+
+      /**
+       * Initializes the Inference Engine worker.
+       */
+      async function initializeInferenceEngine() {
+        inferEngine = new InferenceEngine();
+        loadingIndicator.classList.remove("hidden");
+        inferButton.disabled = true;
+        showStatusMessage("Loading model, please wait...", false);
+
+        try {
+          workerId = await inferEngine.startWorker(
+            modelId,
+            modelVersion,
+            publishableKey
+          );
+          loadingIndicator.classList.add("hidden");
+          inferButton.disabled = false;
+          showStatusMessage(
+            "Model loaded successfully! Upload an image to start.",
+            false
+          );
+          console.log("Inference.js model loaded with workerId:", workerId);
+        } catch (error) {
+          loadingIndicator.classList.add("hidden");
+          inferButton.disabled = true;
+          showStatusMessage(
+            `Failed to load model: ${error.message}. Please check your key and model details.`,
+            true
+          );
+          console.error("Error loading Inference.js model:", error);
+        }
+      }
+
+      /**
+       * Runs the inference on the currently displayed image.
+       */
+      async function runInference() {
+        if (!workerId) {
+          showStatusMessage(
+            "Model not loaded yet. Please wait or refresh the page.",
+            true
+          );
+          return;
+        }
+        if (
+          !inferenceImage.src ||
+          inferenceImage.src.includes("placehold.co")
+        ) {
+          showStatusMessage("Please upload an image first.", true);
+          return;
+        }
+
+        inferButton.disabled = true;
+        loadingIndicator.classList.remove("hidden");
+        clearResults(); // Clear previous results before new inference
+        hideStatusMessage();
+        predictionStatusText.textContent = "Running inference...";
+
+        try {
+          // Ensure the image is fully loaded before creating CVImage
+          if (!inferenceImage.complete) {
+            await new Promise((resolve) => {
+              inferenceImage.onload = resolve;
+              inferenceImage.onerror = () => {
+                throw new Error("Image failed to load.");
+              };
+            });
+          }
+
+          const cvImage = new CVImage(inferenceImage);
+          const predictions = await inferEngine.infer(workerId, cvImage);
+
+          // Log predictions to console for debugging purposes.
+          // This will help you see the exact 'label' or 'class_id' the model returns.
+          console.log("Raw Predictions:", predictions);
+
+          loadingIndicator.classList.add("hidden");
+          inferButton.disabled = false;
+
+          displayPredictionsInModal(predictions); // Display in modal
+          drawBoundingBoxes(predictions); // Still draw on canvas
+          showStatusMessage(
+            "Inference completed! Results shown in pop-up.",
+            false
+          );
+          predictionStatusText.textContent =
+            'Inference completed. Click "Run Inference" again or upload a new image.';
+        } catch (error) {
+          loadingIndicator.classList.add("hidden");
+          inferButton.disabled = false;
+          showStatusMessage(`Inference failed: ${error.message}.`, true);
+          console.error("Error during inference:", error);
+          predictionStatusText.textContent = `Error during inference: ${error.message}`;
+        }
+      }
+
+      /**
+       * Displays the predictions in a modal.
+       * @param {Array<Object>} predictions - The array of prediction objects.
+       */
+      function displayPredictionsInModal(predictions) {
+        modalPredictionList.innerHTML = ""; // Clear previous list items
+        if (predictions && predictions.length > 0) {
+          predictions.forEach((p) => {
+            const displayLabel = getDisplayLabel(p.label || p.class_id); // Use p.label or p.class_id
+            const listItem = document.createElement("li");
+            listItem.className = "mb-1";
+            // Format the label as "Label: [label_name]: [confidence]%"
+            listItem.textContent = `Label: ${displayLabel}: ${(
+              p.confidence * 100
+            ).toFixed(2)}%`;
+            modalPredictionList.appendChild(listItem);
+          });
+          modalNoPredictions.classList.add("hidden");
+        } else {
+          modalNoPredictions.classList.remove("hidden");
+        }
+        showModal(); // Show the modal after populating it
+      }
+
+      /**
+       * Shows the prediction results modal.
+       */
+      function showModal() {
+        predictionModal.classList.remove("hidden");
+        // Use setTimeout to allow the display property to apply before starting transition
+        setTimeout(() => {
+          predictionModal.classList.add("show");
+        }, 10);
+      }
+
+      /**
+       * Hides the prediction results modal.
+       */
+      function hideModal() {
+        predictionModal.classList.remove("show");
+        // Use setTimeout to allow the transition to complete before hiding
+        setTimeout(() => {
+          predictionModal.classList.add("hidden");
+        }, 300); // Match transition duration
+      }
+
+      /**
+       * Draws bounding boxes and labels on the canvas.
+       * @param {Array<Object>} predictions - The array of prediction objects.
+       */
+      function drawBoundingBoxes(predictions) {
+        // Set canvas dimensions to match the displayed image dimensions
+        imageCanvas.width = inferenceImage.offsetWidth;
+        imageCanvas.height = inferenceImage.offsetHeight;
+
+        // Clear previous drawings
+        ctx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
+
+        // Calculate scaling factors
+        const scaleX = inferenceImage.offsetWidth / inferenceImage.naturalWidth;
+        const scaleY =
+          inferenceImage.offsetHeight / inferenceImage.naturalHeight;
+
+        ctx.lineWidth = 2;
+        ctx.font = "16px Inter";
+        ctx.textBaseline = "top";
+
+        predictions.forEach((p) => {
+          // Scale coordinates
+          const x = p.x * scaleX;
+          const y = p.y * scaleY;
+          const width = p.width * scaleX;
+          const height = p.height * scaleY;
+
+          // Draw rectangle
+          ctx.strokeStyle = "#ef4444"; // Tailwind red-500
+          ctx.strokeRect(x, y, width, height);
+
+          // Get the display label using the mapping
+          const displayLabel = getDisplayLabel(p.label || p.class_id); // Use p.label or p.class_id
+          const labelText = `Label: ${displayLabel}: ${(
+            p.confidence * 100
+          ).toFixed(1)}%`;
+          const textMetrics = ctx.measureText(labelText);
+          const textWidth = textMetrics.width;
+          const textHeight = 20; // Approximate height for 16px font
+
+          ctx.fillStyle = "#ef4444"; // Tailwind red-500
+          ctx.fillRect(x, y - textHeight, textWidth + 10, textHeight); // Add padding to background
+
+          // Draw label text
+          ctx.fillStyle = "#ffffff"; // White text
+          ctx.fillText(labelText, x + 5, y - textHeight + 2);
+        });
+      }
+
+      // Event listener for the inference button
+      inferButton.addEventListener("click", runInference);
+
+      // Event listener for the modal close button
+      closeModalButton.addEventListener("click", hideModal);
+
+      // Close modal if clicking outside the content
+      predictionModal.addEventListener("click", (e) => {
+        if (e.target === predictionModal) {
+          hideModal();
+        }
+      });
+
+      // Initialize the Inference Engine when the DOM is fully loaded
+      document.addEventListener("DOMContentLoaded", initializeInferenceEngine);
+
+      // Adjust canvas size when image dimensions change (e.g., on load or resize)
+      inferenceImage.onload = () => {
+        // Only adjust canvas size if an actual image is loaded (not the placeholder)
+        if (!inferenceImage.src.includes("placehold.co")) {
+          imageCanvas.width = inferenceImage.offsetWidth;
+          imageCanvas.height = inferenceImage.offsetHeight;
+          // Redraw if there were previous predictions and image size changed
+          // For simplicity, we'll clear and let the user re-run inference.
+          clearResults();
+        }
+      };
+
+      // Handle window resize to keep canvas aligned with the image
+      window.addEventListener("resize", () => {
+        if (
+          inferenceImage.complete &&
+          !inferenceImage.src.includes("placehold.co")
+        ) {
+          drawBoundingBoxes([]); // Clear and resize canvas
+          // If you want to redraw existing boxes on resize, you'd need to store the last predictions
+          // and call drawBoundingBoxes(lastPredictions) here. For simplicity, we clear.
+        }
+      });
+    </script>
+  </body>
+</html>
